@@ -645,6 +645,12 @@ def decide(game_no, view, pending):
         text = decide_speak(g, game_no, rnd)
         if text is None:
             return {"game": game_no, "decision": "speak", "pass": True}
+        # The env folds a statement to one line and counts its length
+        # after folding; fold and clamp here so an act is never refused.
+        text = " ".join(text.split())
+        limit = pending.get("max_chars") or 480
+        if len(text) > limit:
+            text = text[:limit]
         return {"game": game_no, "decision": "speak", "text": text}
     return {"game": game_no, "decision": kind, "pass": True}
 
