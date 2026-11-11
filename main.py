@@ -305,8 +305,20 @@ def decide_kill(g, options):
     score = {}
     seer_seat = g.trusted_seer() or g.sole_claimant()
     doctor_dead = any(r == "doctor" for r in g.revealed.values())
+    # A seer who has already named a wolf (me or my partner) is the
+    # consensus kill: my partner, naming second, will pick them too,
+    # and every night they live costs another check.
+    revealer = None
+    for c, cd in g.seer_claimants.items():
+        if c == g.me:
+            continue
+        if any(w and t in (g.me, g.partner) for t, (w, _d) in cd["checks"].items()):
+            revealer = c
+            break
     for t in options:
         sc = 0.0
+        if t == revealer:
+            sc += 60
         if t == seer_seat:
             sc += 46 if doctor_dead else 30
         # A villager cleared by a credible seer can never be exiled;
@@ -466,8 +478,45 @@ def decide_speak(g, game_no, rnd):
         if village_seer is not None and g.seer_claimants[village_seer][
                 "checks"].get(me, (False, 0))[0]:
             about_to_die = True  # the real seer has me; only a counter-claim saves me
-        if about_to_die or endgame_push:
+        # A seer has outed my partner: open a claim war and frame the
+        # accuser. Bussing quietly loses the numbers anyway; a war can
+        # split the exile vote or cost the village its seer.
+        if partner is not None and g.alive.get(partner):
+            accuser = None
+            for c in rival_claims:
+                if g.seer_claimants[c]["checks"].get(partner, (False, 0))[0]:
+                    accuser = c
+                    break
+            partner_risk = declared.get(partner, 0) + sum(
+                1 for (d, v, t) in g.votes if d == g.day and t == partner)
+            if accuser is not None and (partner_risk >= 1 or g.day >= 2):
+                return wolf_fake_claim_text(g, frame_override=accuser)
+        if about_to_die:
+            # Frame the seer who has me, if there is one.
+            hunter = None
+            for c in rival_claims:
+                if g.seer_claimants[c]["checks"].get(me, (False, 0))[0]:
+                    hunter = c
+                    break
+            return wolf_fake_claim_text(g, frame_override=hunter)
+        if endgame_push:
             return wolf_fake_claim_text(g)
+        if rnd == 1 and g.day == 1:
+            # Day 1 has no vote record to cite; a wolf who invents one
+            # is caught on the facts. Stay soft: claim villager plainly
+            # and lean on whoever is steering the talk.
+            talk = {}
+            for (_d, _r, s, txt) in g.speeches:
+                if s != me and s != partner:
+                    talk[s] = talk.get(s, 0) + len(txt)
+            talkative = [s for s in sorted(talk, key=lambda s: -talk[s])
+                         if talk[s] > 0 and g.alive.get(s)]
+            if not talkative:
+                return None
+            t = talkative[0]
+            return ("I'm %s, a villager. %s has done most of the steering "
+                    "so far, and steering is how a wolf farms trust; that "
+                    "is where I would look today." % (g.ref(me), g.ref(t)))[:480]
         if rnd == 1:
             # Push a villager: prefer the one the village already doubts,
             # never my partner, never a cleared seat.
@@ -533,20 +582,38 @@ def decide_speak(g, game_no, rnd):
     return None
 
 
-def wolf_fake_claim_text(g):
-    """Build a consistent fake seer history and frame one villager."""
+def wolf_fake_claim_text(g, frame_override=None):
+    """Build a consistent fake seer history and frame one villager.
+
+    A real seer's history mixes living clears with dead ones, so the
+    invented one does too: one living clear on an early night, dead
+    clears after, and the framed wolf as last night's check.
+    """
     dead_clear = [s for s, r in g.revealed.items()
                   if r != "werewolf" and not g.alive.get(s)]
     living = [s for s in g.living_others() if s != g.partner]
-    frame = None
-    for s in sorted(living, key=lambda s: -g.sus.get(s, 0)):
-        frame = s
-        break
+    if frame_override is not None and g.alive.get(frame_override):
+        frame = frame_override
+    elif living:
+        frame = sorted(living, key=lambda s: -g.sus.get(s, 0))[0]
+    else:
+        frame = None
+    rivals = [c for c in g.seer_claimants if c != g.me]
+    clear_pool = [s for s in living
+                  if s != frame and s not in rivals]
+    living_clear = (sorted(clear_pool, key=lambda s: g.sus.get(s, 0))[0]
+                    if clear_pool else None)
     parts = []
-    used = 0
+    night = 0
+    if living_clear is not None and g.day >= 2:
+        night += 1
+        parts.append("night %d I checked %s: not a werewolf"
+                     % (night, g.ref(living_clear)))
     for s in dead_clear[:2]:
-        used += 1
-        parts.append("night %d I checked %s: not a werewolf" % (used, g.ref(s)))
+        if len(parts) >= max(1, g.day - 1):
+            break
+        night += 1
+        parts.append("night %d I checked %s: not a werewolf" % (night, g.ref(s)))
     if frame is not None:
         parts.append("last night I checked %s: a WEREWOLF" % g.ref(frame))
     body = "; ".join(parts)
