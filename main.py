@@ -304,6 +304,9 @@ def decide_kill(g, options):
                 return v["target"]
     score = {}
     seer_seat = g.trusted_seer() or g.sole_claimant()
+    if seer_seat == g.partner:
+        seer_seat = None  # my partner fake-claiming is not a target hint
+    last_protect = (g.view.get("lastProtect") or {}).get("seat")
     doctor_dead = any(r == "doctor" for r in g.revealed.values())
     # A seer who has already named a wolf (me or my partner) is the
     # consensus kill: my partner, naming second, will pick them too,
@@ -320,7 +323,18 @@ def decide_kill(g, options):
         if t == revealer:
             sc += 60
         if t == seer_seat:
-            sc += 46 if doctor_dead else 30
+            if doctor_dead:
+                sc += 46
+            elif last_protect == t:
+                # The doctor guarded them last night and cannot repeat
+                # the guard tonight: the seer is exposed right now.
+                sc += 58
+            else:
+                # A public seer the doctor can still guard tonight is
+                # a wasted kill; the guard cannot cover everyone else.
+                sc += 8
+        if t in g.doctor_claimants and not doctor_dead:
+            sc += 18  # a named doctor is the shield behind the seer
         # A villager cleared by a credible seer can never be exiled;
         # removing them shrinks the village's safe core.
         for c, lv in g.trust.items():
@@ -489,7 +503,15 @@ def decide_speak(g, game_no, rnd):
                     break
             partner_risk = declared.get(partner, 0) + sum(
                 1 for (d, v, t) in g.votes if d == g.day and t == partner)
-            if accuser is not None and (partner_risk >= 1 or g.day >= 2):
+            if accuser is not None and partner_risk >= 3 and rnd == 1:
+                # The case is already overwhelming: a fake claim now
+                # only ties me to the fall. Distance instead and live.
+                return ("I wanted to believe %s, but the checks and the "
+                        "votes line up against them and I cannot argue "
+                        "with that. My vote follows the evidence."
+                        % g.ref(partner))[:480]
+            if accuser is not None and partner_risk <= 2 and \
+                    (partner_risk >= 1 or g.day >= 2):
                 return wolf_fake_claim_text(g, frame_override=accuser)
         if about_to_die:
             # Frame the seer who has me, if there is one.
@@ -499,6 +521,11 @@ def decide_speak(g, game_no, rnd):
                     hunter = c
                     break
             return wolf_fake_claim_text(g, frame_override=hunter)
+        if g.day >= 2 and rnd == 1 and not rival_claims:
+            # No seer has spoken yet: take the mantle first. The first
+            # claimant sets the frame; the real seer must then claim
+            # into a war and risk being exiled as the fake.
+            return wolf_fake_claim_text(g)
         if endgame_push:
             return wolf_fake_claim_text(g)
         if rnd == 1 and g.day == 1:
@@ -637,6 +664,16 @@ def decide_vote(g, options):
                       if w and t in options]
             if framed:
                 return framed[0]
+        # If a credible seer has named my partner, the partner is
+        # likely lost; voting with the village buys me the trust I
+        # need to finish the game alone.
+        if partner in options:
+            for c, cd in g.seer_claimants.items():
+                if c == me or c == partner:
+                    continue
+                if cd["checks"].get(partner, (False, 0))[0] and \
+                        g.trust.get(c) in ("confirmed", "backed", "plausible"):
+                    return partner
         # If the partner is certainly falling, blend in by joining.
         if partner in options and g.sus.get(partner, 0) >= 110 and \
                 cast.get(partner, 0) + declared.get(partner, 0) >= 3:
